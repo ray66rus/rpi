@@ -179,9 +179,8 @@ static size_t _get_result_as_text(unsigned char *data, char *res) {
 static ssize_t dht22_read(struct file *file, char __user *buf, size_t count, loff_t *pos) {
 	unsigned long flags;
 	int err;
-	int copy_result, data_length;
+	size_t copy_result, data_length;
 	unsigned char sensor_data[SENSOR_DATA_LENGTH];
-printk(KERN_ERR "POS: %lld\n", *pos);
 
 	if(*pos != 0) {
 		*pos = 0;
@@ -198,9 +197,13 @@ printk(KERN_ERR "POS: %lld\n", *pos);
 	if(is_in_text_mode) {
 		char text_result[MAX_RESULT_STRING_LENGTH];
 		data_length = _get_result_as_text(sensor_data, text_result);
+		if(data_length > count)
+			data_length = count;
 		copy_result = copy_to_user(buf, text_result, data_length);
 	} else {
 		data_length = SENSOR_DATA_LENGTH;
+		if(data_length > count)
+			data_length = count;
 		copy_result = copy_to_user(buf, sensor_data, data_length);
 	}
 
@@ -208,7 +211,7 @@ printk(KERN_ERR "POS: %lld\n", *pos);
 		printk(KERN_ERR DEV_NAME ": %d bytes couldn't be copied to user space", copy_result);
 
 	*pos = data_length - copy_result;
-	return data_length - copy_result;
+	return *pos;
 }
 
 static struct file_operations dht22_fops = {
@@ -230,7 +233,7 @@ static int __init dht22_init(void) {
 
 	printk(KERN_ERR DEV_NAME ": dht22 init with pin %d\n", PIN);
 
-	request_result = gpio_request(PIN, "Led pin");
+	request_result = gpio_request(PIN, "DHT22 pin");
 	if(request_result) {
 		printk(KERN_ERR DEV_NAME ": unable to request GPIO: %d\n", request_result);
 		return request_result;
