@@ -48,20 +48,16 @@
 static int PIN = 4;
 module_param(PIN, int, 0);
 
-static unsigned await_timer = 0;
-static struct timeval initial;
-
 static short is_in_text_mode = 1;
 
-static inline unsigned micros(void) {
+static inline unsigned long long micros(void) {
 	struct timeval t;
 	do_gettimeofday(&t);
-	t.tv_sec -= initial.tv_sec;
 	return ((unsigned) t.tv_sec * (unsigned) 1000000) + t.tv_usec;
 }
 
 static inline void await(unsigned us) {
-	await_timer = micros() + us;
+	unsigned long long await_timer = micros() + us;
 	while(micros() < await_timer) ; 
 }
 
