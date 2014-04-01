@@ -41,11 +41,17 @@
 
 #define PIN_RX_DESC "RF433 RX pin"
 #define PIN_TX_DESC "RF433 TX pin"
+#define BUFFER_MAX_MESSAGES 2
+#define BUFFER_SIZE BUFFER_MAX_MESSAGES * PACKET_DATA_LENGTH_WITH_SIZE 
 
 static int PIN_TX = 17;
 static int PIN_RX = 4;
 module_param(PIN_TX, int, 0);
 module_param(PIN_RX, int, 0);
+
+static unsigned char buffer[BUFFER_SIZE];
+static unsigned int first_msg_idx, current_msg_idx;
+static DEFINE_SPINLOCK(buffer_lock);
 
 static inline unsigned long long micros(void) {
 	struct timeval t;
@@ -98,7 +104,7 @@ uint8_t _get_preamble_and_sync(void) {
                 next_bit = _rf_get_next_bit();
                 preamble_length++;
         } while(current_bit != next_bit);
-        if(preamble_length < 10 || current_bit == 0)
+        if(preamble_length < 20 || current_bit == 0)
                 return 0;
         for(i=0;i<6;i++)
                 current_bit = _rf_get_next_bit();
@@ -125,15 +131,39 @@ static inline int _receive_packet(unsigned char *buf) {
 	if(!_is_crc8_ok(data, PACKET_DATA_LENGTH + 1, data[PACKET_DATA_LENGTH + 1]))
 		return -RF_ERR_CRC_ERROR;
 
-	for(i=0;i<data[0];i++)
-		buf[i] = data[i+1];
+	for(i=0;i<data[0]+1;i++)
+		buf[i] = data[i];
 
         return data[0];
 }
 
+static void _add_received_packet_to_buffer(unsigned char *data) {
+	unsigned char data_length_with_size;
+	unsigned int in_msg_idx;
+	int i;
+
+	if(buffer[current_msg_idx] != 0) {
+		current_msg_idx += buffer[current_msg_idx] + 1;
+		if(current_msg_idx >= BUFFER_SIZE)
+			current_msg_idx -= BUFFER_SIZE;
+	}
+
+	data_length_with_size = data[0] + 1;
+	for(i=0, in_msg_idx=current_msg_idx;i<=data_length_with_size;i++) {
+		buffer[in_msg_idx++] = data[i];
+		if(in_msg_idx == BUFFER_SIZE)
+			in_msg_idx = 0;
+		if(i < data_length_with_size && in_msg_idx == first_msg_idx) {
+			first_msg_idx += buffer[first_msg_idx] + 1;
+			if(first_msg_idx >= BUFFER_SIZE)
+				first_msg_idx -= BUFFER_SIZE;
+		}
+	}
+}
+
 static irqreturn_t r_irq_handler(int irq, void *dev_id, struct pt_regs *regs) {
 	unsigned long flags;
-	unsigned char data[PACKET_DATA_LENGTH+1];
+	unsigned char data[PACKET_DATA_LENGTH_WITH_SIZE];
 	int data_length;
 
 	local_irq_save(flags);
@@ -148,14 +178,15 @@ static irqreturn_t r_irq_handler(int irq, void *dev_id, struct pt_regs *regs) {
 		return IRQ_HANDLED;
 	}
 
-	if(data_length > PACKET_DATA_LENGTH) {
+	if(data_length > PACKET_DATA_LENGTH_WITH_SIZE) {
 		printk(KERN_NOTICE DEV_NAME ": wrong data length in incoming packet (%d), packet dropped\n", data_length);
 		return IRQ_HANDLED;
 	}
 
-	data[data_length] = 0;
+	spin_lock_irqsave(&buffer_lock, flags);
+	_add_received_packet_to_buffer(data);
+	spin_unlock_irqrestore(&buffer_lock, flags);
 
-	printk(KERN_DEBUG DEV_NAME ": data received (%s)\n", data);
  
 	return IRQ_HANDLED;
 }
@@ -309,6 +340,13 @@ static size_t _get_result_as_text(unsigned char *data, char *res) {
 }*/
 
 static ssize_t rf433_read(struct file *file, char __user *buf, size_t count, loff_t *pos) {
+	int i;
+	char data[PACKET_DATA_LENGTH_WITH_SIZE];
+	for(i=1;i<buffer[first_msg_idx];i++) {
+		data[i] = buffer[first_msg_idx+i];
+	}
+	data[i] = 0;
+	printk(KERN_ERR DEV_NAME ": buffer is: %u - %u %s\n", first_msg_idx, current_msg_idx, data);
 /*	unsigned long flags;
 	int err;
 	size_t copy_result, data_length;
@@ -372,6 +410,9 @@ static int __init rf433_init(void) {
 		tx_pin_release();
 		return err;
 	}
+
+	first_msg_idx = current_msg_idx = 0;
+	buffer[current_msg_idx] = 0;
 
 	misc_register(&rf433_misc_device);
 	return 0;
