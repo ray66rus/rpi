@@ -115,8 +115,6 @@ static inline int _receive_packet(unsigned char *buf) {
 	int i,j;
 	unsigned char data[PACKET_DATA_LENGTH_WITH_SIZE_AND_CRC];
 
-	gpio_direction_input(PIN_RX);
-
 	if(_get_preamble_and_sync() == 0)
 		return -RF_ERR_TOUT;
 
@@ -137,27 +135,30 @@ static inline int _receive_packet(unsigned char *buf) {
         return data[0];
 }
 
+static void _move_idx_to_next_msg(unsigned int *idx) {
+	unsigned char current_msg_length;
+
+	current_msg_length = buffer[*idx];
+	*idx = *idx + current_msg_length + 1;
+	if(*idx >= BUFFER_SIZE)
+		*idx = *idx - BUFFER_SIZE;
+}
+
 static void _add_received_packet_to_buffer(unsigned char *data) {
 	unsigned char data_length_with_size;
 	unsigned int in_msg_idx;
 	int i;
 
-	if(buffer[current_msg_idx] != 0) {
-		current_msg_idx += buffer[current_msg_idx] + 1;
-		if(current_msg_idx >= BUFFER_SIZE)
-			current_msg_idx -= BUFFER_SIZE;
-	}
+	if(buffer[current_msg_idx] != 0)
+		_move_idx_to_next_msg(&current_msg_idx);
 
 	data_length_with_size = data[0] + 1;
 	for(i=0, in_msg_idx=current_msg_idx;i<=data_length_with_size;i++) {
 		buffer[in_msg_idx++] = data[i];
 		if(in_msg_idx == BUFFER_SIZE)
 			in_msg_idx = 0;
-		if(i < data_length_with_size && in_msg_idx == first_msg_idx) {
-			first_msg_idx += buffer[first_msg_idx] + 1;
-			if(first_msg_idx >= BUFFER_SIZE)
-				first_msg_idx -= BUFFER_SIZE;
-		}
+		if(in_msg_idx == first_msg_idx)
+			_move_idx_to_next_msg(&first_msg_idx);
 	}
 }
 
@@ -183,10 +184,9 @@ static irqreturn_t r_irq_handler(int irq, void *dev_id, struct pt_regs *regs) {
 		return IRQ_HANDLED;
 	}
 
-	spin_lock_irqsave(&buffer_lock, flags);
+	spin_lock(&buffer_lock);
 	_add_received_packet_to_buffer(data);
-	spin_unlock_irqrestore(&buffer_lock, flags);
-
+	spin_unlock(&buffer_lock);
  
 	return IRQ_HANDLED;
 }
@@ -342,11 +342,11 @@ static size_t _get_result_as_text(unsigned char *data, char *res) {
 static ssize_t rf433_read(struct file *file, char __user *buf, size_t count, loff_t *pos) {
 	int i;
 	char data[PACKET_DATA_LENGTH_WITH_SIZE];
-	for(i=1;i<buffer[first_msg_idx];i++) {
-		data[i] = buffer[first_msg_idx+i];
+	for(i=0;i<buffer[first_msg_idx];i++) {
+		data[i] = buffer[first_msg_idx+i+1];
 	}
 	data[i] = 0;
-	printk(KERN_ERR DEV_NAME ": buffer is: %u - %u %s\n", first_msg_idx, current_msg_idx, data);
+	printk(KERN_ERR DEV_NAME ": buffer is: %u - %u (%s)\n", first_msg_idx, current_msg_idx, data);
 /*	unsigned long flags;
 	int err;
 	size_t copy_result, data_length;
